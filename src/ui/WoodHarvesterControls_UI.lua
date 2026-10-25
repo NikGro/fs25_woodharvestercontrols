@@ -174,7 +174,7 @@ function WoodHarvesterControls_UI:updateValues()
     self:updateTiltUpDelay()
 
     if whSpec.cutReleasedComponentJoint ~= nil then
-        self.tiltDownWithCloseButtonSetting:setIsChecked(whSpec.thisIsaVariable)
+        self.tiltDownWithCloseButtonSetting:setIsChecked(whSpec.tiltDownWithCloseButton)
         self.tiltDownWithCloseButtonSetting:setDisabled(false)
     else
         self.tiltDownWithCloseButtonSetting:setDisabled(true)
@@ -329,7 +329,7 @@ function WoodHarvesterControls_UI:updateSettingsToSave()
     local n = Utils.getNoNil(tonumber(self.tiltUpDelay:getText()), 0)
     settings.tiltUpDelay = n
 
-    settings.thisIsaVariable = self.tiltDownWithCloseButtonSetting:getIsChecked()
+    settings.tiltDownWithCloseButton = self.tiltDownWithCloseButtonSetting:getIsChecked()
 
     local n = Utils.getNoNil(tonumber(self.tiltDownDelay:getText()), 0)
     settings.tiltDownDelay = n

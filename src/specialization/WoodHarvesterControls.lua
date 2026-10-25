@@ -201,6 +201,14 @@ local Actions = { {
     priority = GS_PRIO_HIGH
 } }
 
+-- actions that report a key release (triggerUp); only these are tracked as "held"
+local ActionHasRelease = {}
+for _, action in ipairs(Actions) do
+    if action.triggerUp == true then
+        ActionHasRelease[action.name] = true
+    end
+end
+
 function WoodHarvesterControls.prerequisitesPresent(specializations)
     return SpecializationUtil.hasSpecialization(TurnOnVehicle, specializations)
 end
@@ -439,13 +447,13 @@ function WoodHarvesterControls:onLoad(superFunc, savegame)
     spec.tiltDownOnFellingCut = true
     spec.tiltUpWithOpenButton = true
     spec.tiltUpDelay = 500
-    spec.thisIsaVariable = true
+    spec.tiltDownWithCloseButton = false -- opt-in, changes the original close button behaviour
     spec.tiltDownDelay = 500
     spec.tiltMaxRot = 95 / 180 * math.pi
 
     spec.registerSound = true
     spec.maxRemovingLength = 0.5
-    spec.maxRemovingDiameter = 0.2
+    spec.maxRemovingDiameter = 0 -- off by default, it removes wood
     spec.allSplitType = false
     spec.overrideOwnedFarm = false
 
@@ -490,6 +498,7 @@ function WoodHarvesterControls:onLoad(superFunc, savegame)
     spec.lastPreset1Time = -1
     spec.lastPreset2Time = -1
     spec.lastPreset3Time = -1
+    spec.whcHeldButtons = {}
     spec.doublePressPresetTime = 500
 
     if self.isServer then
@@ -628,7 +637,10 @@ function WoodHarvesterControls:onPostLoad(superFunc, savegame)
     spec.tiltDownOnFellingCut = savegame.xmlFile:getValue(key .. "#tiltDownOnFellingCut", spec.tiltDownOnFellingCut)
     spec.tiltUpWithOpenButton = savegame.xmlFile:getValue(key .. "#tiltUpWithOpenButton", spec.tiltUpWithOpenButton)
     spec.tiltUpDelay = savegame.xmlFile:getValue(key .. "#tiltUpDelay", spec.tiltUpDelay)
-    spec.thisIsaVariable = savegame.xmlFile:getValue(key .. "#thisIsaVariable", spec.thisIsaVariable)
+    -- "thisIsaVariable" is the attribute name used by the joevento fork, still read for old savegames
+    spec.tiltDownWithCloseButton = savegame.xmlFile:getValue(key .. "#thisIsaVariable", spec.tiltDownWithCloseButton)
+    spec.tiltDownWithCloseButton = savegame.xmlFile:getValue(key .. "#tiltDownWithCloseButton",
+        spec.tiltDownWithCloseButton)
     spec.tiltDownDelay = savegame.xmlFile:getValue(key .. "#tiltDownDelay", spec.tiltDownDelay)
     spec.tiltMaxRot = savegame.xmlFile:getValue(key .. "#tiltMaxRot", spec.tiltMaxRot)
 
@@ -727,7 +739,7 @@ function WoodHarvesterControls:saveToXMLFile(xmlFile, key, usedModNames)
     xmlFile:setValue(key .. "#tiltDownOnFellingCut", spec.tiltDownOnFellingCut)
     xmlFile:setValue(key .. "#tiltUpWithOpenButton", spec.tiltUpWithOpenButton)
     xmlFile:setValue(key .. "#tiltUpDelay", spec.tiltUpDelay)
-    xmlFile:setValue(key .. "#thisIsaVariable", spec.thisIsaVariable)
+    xmlFile:setValue(key .. "#tiltDownWithCloseButton", spec.tiltDownWithCloseButton)
     xmlFile:setValue(key .. "#tiltDownDelay", spec.tiltDownDelay)
     xmlFile:setValue(key .. "#tiltMaxRot", spec.tiltMaxRot)
 
@@ -791,7 +803,7 @@ function WoodHarvesterControls:onReadStream(superFunc, streamId, connection)
     spec.tiltDownOnFellingCut = streamReadBool(streamId)
     spec.tiltUpWithOpenButton = streamReadBool(streamId)
     spec.tiltUpDelay = streamReadFloat32(streamId)
-    spec.thisIsaVariable = streamReadBool(streamId)
+    spec.tiltDownWithCloseButton = streamReadBool(streamId)
     spec.tiltDownDelay = streamReadFloat32(streamId)
     spec.tiltMaxRot = streamReadFloat32(streamId)
 
@@ -850,7 +862,7 @@ function WoodHarvesterControls:onWriteStream(superFunc, streamId, connection)
     streamWriteBool(streamId, spec.tiltDownOnFellingCut)
     streamWriteBool(streamId, spec.tiltUpWithOpenButton)
     streamWriteFloat32(streamId, spec.tiltUpDelay)
-    streamWriteBool(streamId, spec.thisIsaVariable)
+    streamWriteBool(streamId, spec.tiltDownWithCloseButton)
     streamWriteFloat32(streamId, spec.tiltDownDelay)
     streamWriteFloat32(streamId, spec.tiltMaxRot)
 
@@ -1295,11 +1307,13 @@ function WoodHarvesterControls:onUpdate(superFunc, dt, isActiveForInput, isActiv
             spec.openHoldTimer = spec.openHoldTimer + dt
             if spec.openHoldTimer >= spec.tiltUpDelay then
                 spec.tiltedUp = true
+                spec.forcedTiltDown = false
+                spec.closeHoldTimerTilt = -1
                 spec.openHoldTimer = -1
             end
         end
 
-        if WHC.isTiltSupported(self) and spec.thisIsaVariable and spec.closeHoldTimerTilt >= 0 then
+        if WHC.isTiltSupported(self) and spec.tiltDownWithCloseButton and spec.closeHoldTimerTilt >= 0 then
             spec.closeHoldTimerTilt = spec.closeHoldTimerTilt + dt
             if spec.closeHoldTimerTilt >= spec.tiltDownDelay then
                 spec.tiltedUp = false
@@ -1513,10 +1527,14 @@ function WoodHarvesterControls:onUpdateTick(superFunc, dt, isActiveForInput, isA
                     g_server:broadcastEvent(WoodHarvesterOnCutTreeEvent.new(self, 0), nil, nil, self)
                 end
             end
-        else
-            self:setLastTreeDiameter(self.spec_woodHarvester.lastDiameter)
-            WHC.closeHead(self)
-            -- The position of the tree doesn't get updated so its sometimes sitting quite far from the body but I don't see a way to fix it
+        elseif spec.attachedSplitShape ~= nil then
+            -- Keep the knives on the log while feeding. Only re-issue the close command when the
+            -- target changes or the knives are not where they should be, so no animation/network
+            -- events are sent every tick.
+            if spec.tempDiameter ~= spec.lastDiameter then
+                self:setLastTreeDiameter(spec.lastDiameter)
+            end
+            WHC.ensureHeadClosed(self)
         end
     end
 
@@ -1754,7 +1772,7 @@ function WoodHarvesterControls:whcUpdateSettings(settings, noEventSend)
     spec.tiltDownOnFellingCut = settings.tiltDownOnFellingCut
     spec.tiltUpWithOpenButton = settings.tiltUpWithOpenButton
     spec.tiltUpDelay = settings.tiltUpDelay
-    spec.thisIsaVariable = settings.thisIsaVariable
+    spec.tiltDownWithCloseButton = settings.tiltDownWithCloseButton
     spec.tiltDownDelay = settings.tiltDownDelay
     spec.tiltMaxRot = settings.tiltMaxRot
 
@@ -2030,18 +2048,19 @@ function WoodHarvesterControls:woodHarvesterSplitShapeCallback(superFunc, shape,
         end
     end
 
-    if spec.maxRemovingLength > 0 and isBelow and not isAbove then
+    -- Remove small offcuts. Only pieces that were cut off and dropped are affected (never the log
+    -- held in the head, never a standing stump for the diameter rule).
+    if isBelow and not isAbove and shape ~= spec.attachedSplitShape then
         local sizeX, sizeY, sizeZ, _, _ = getSplitShapeStats(shape)
-        local maxSize = math.max(sizeX, sizeY, sizeZ)
-        if maxSize < spec.maxRemovingLength then
-            delete(shape)
-        end
-    elseif spec.maxRemovingDiameter > 0 then
-        local sizeX, sizeY, sizeZ, _, _ = getSplitShapeStats(shape)
-        local minSize = math.min(sizeX, sizeY, sizeZ)
-        if minSize < spec.maxRemovingDiameter then
-            delete(shape)
-            spec.attachedSplitShape = nil
+        if sizeX ~= nil then
+            local maxSize = math.max(sizeX, sizeY, sizeZ)
+            local minSize = math.min(sizeX, sizeY, sizeZ)
+            if spec.maxRemovingLength > 0 and maxSize < spec.maxRemovingLength then
+                delete(shape)
+            elseif spec.maxRemovingDiameter > 0 and minSize < spec.maxRemovingDiameter
+                and getRigidBodyType(shape) == RigidBodyType.DYNAMIC then
+                delete(shape)
+            end
         end
     end
 end
@@ -2134,15 +2153,18 @@ function WoodHarvesterControls:onRegisterActionEvents(superFunc, isActiveForInpu
 
     if self.isClient then
         local spec = self.spec_woodHarvester
+        if not isActiveForInputIgnoreSelection then
+            WHC.releaseHeldButtons(self)
+        end
         self:clearActionEventsTable(spec.actionEvents)
 
         if isActiveForInputIgnoreSelection then
             for _, action in pairs(Actions) do
                 local actionName = action.name
-                local triggerUp = action.triggerUp ~= nil and action.triggerUp or false
-                local triggerDown = action.triggerDown ~= nil and action.triggerDown or true
-                local triggerAlways = action.triggerAlways ~= nil and action.triggerAlways or false
-                local startActive = action.startActive ~= nil and action.startActive or true
+                local triggerUp = action.triggerUp == true
+                local triggerDown = action.triggerDown ~= false
+                local triggerAlways = action.triggerAlways == true
+                local startActive = action.startActive ~= false
                 local _, eventName = self:addActionEvent(spec.actionEvents, actionName, self,
                     WoodHarvesterControls.onActionCall, triggerUp, triggerDown, triggerAlways, startActive, nil)
 
@@ -2165,6 +2187,17 @@ function WoodHarvesterControls:onActionCall(actionName, keyStatus, callbackStatu
 
     if actionName == ActionName.TURN_ON_OFF_HEAD then
         WHC.onPowerToggleButton(self)
+        return
+    end
+
+    -- A button release must always reach the handlers, even if the head was turned off while
+    -- the button was held. Otherwise hold timers / forced tilt states stay active.
+    local mappedButtonId = ActionButtonMapping[actionName]
+    if mappedButtonId ~= nil and keyStatus <= 0 and ActionHasRelease[actionName] then
+        if spec.whcHeldButtons[mappedButtonId] then
+            spec.whcHeldButtons[mappedButtonId] = nil
+            self:whcOnButtonPressed(mappedButtonId, false)
+        end
         return
     end
 
@@ -2210,9 +2243,35 @@ function WoodHarvesterControls:onActionCall(actionName, keyStatus, callbackStatu
 
     if buttonId then
         local isButtonDown = keyStatus > 0
+        if isButtonDown and ActionHasRelease[actionName] then
+            spec.whcHeldButtons[buttonId] = true
+        end
         self:whcOnButtonPressed(buttonId, isButtonDown)
         return
     end
+end
+
+-- Sends a release for every button that is still held, e.g. when the player leaves the vehicle
+-- or input switches to another vehicle while a button is pressed.
+function WHC:releaseHeldButtons()
+    local spec = self.spec_woodHarvester
+    if spec.whcHeldButtons == nil then
+        return
+    end
+    for buttonId, _ in pairs(spec.whcHeldButtons) do
+        self:whcOnButtonPressed(buttonId, false)
+    end
+    spec.whcHeldButtons = {}
+end
+
+-- Server side: drop all hold timers and forced tilt states.
+function WHC:resetHoldStates()
+    local spec = self.spec_woodHarvester
+    spec.openHoldTimer = -1
+    spec.closeHoldTimer = -1
+    spec.closeHoldTimerTilt = -1
+    spec.forcedTiltUp = false
+    spec.forcedTiltDown = false
 end
 
 function WoodHarvesterControls:actionEventCutTree(superFunc, actionName, inputValue, callbackState, isAnalog)
@@ -2276,16 +2335,24 @@ function WoodHarvesterControls:onTiltUpButton(isButtonDown)
     local spec = self.spec_woodHarvester
     if isButtonDown then
         spec.tiltedUp = true
+        spec.forcedTiltDown = false
+        spec.closeHoldTimerTilt = -1
     end
     spec.forcedTiltUp = isButtonDown
 end
 
 function WoodHarvesterControls:onTiltDownButton(isButtonDown)
     local spec = self.spec_woodHarvester
+    if not isButtonDown then
+        -- always clear on release, otherwise the forced tilt down can stay active forever
+        spec.forcedTiltDown = false
+        return
+    end
     if not spec.tiltedUp then
-        spec.forcedTiltDown = isButtonDown
+        spec.forcedTiltDown = true
     end
     spec.tiltedUp = false
+    spec.openHoldTimer = -1
 end
 
 function WoodHarvesterControls:onGrabToggleButton(isButtonDown)
@@ -2607,6 +2674,8 @@ function WoodHarvesterControls:onTurnedOff(superFunc)
 
     local spec = self.spec_woodHarvester
 
+    WHC.resetHoldStates(self)
+
     if spec.automaticOpen and spec.attachedSplitShape == nil then
         WHC.closeHead(self)
     end
@@ -2722,6 +2791,7 @@ end
 
 function WHC:openHead()
     local spec = self.spec_woodHarvester
+    spec.whcLastCloseTarget = nil
 
     if spec.advancedOpenClose == true then
         WHC.playAnimationForward(self, AnimationKey.TOP_KNIVES)
@@ -2761,6 +2831,43 @@ end
 function WHC:closeHead()
     WHC.closeKnives(self)
     WHC.closeRollers(self)
+end
+
+-- true while the animation is running or already rests at the given stop time
+function WHC:isAnimationAtStopTime(animationKey, targetTime)
+    local spec = self.spec_woodHarvester
+    local anim = spec[animationKey]
+    if anim == nil or anim.name == nil or targetTime == nil then
+        return true
+    end
+    if self:getIsAnimationPlaying(anim.name) then
+        return true
+    end
+    if anim.speedScale ~= nil and anim.speedScale < 0 then
+        targetTime = 1.0 - targetTime
+    end
+    return math.abs(self:getAnimationTime(anim.name) - targetTime) < 0.02
+end
+
+function WHC:ensureHeadClosed()
+    local spec = self.spec_woodHarvester
+    local targetTime = WHC.getMaxClosingPoint(self)
+
+    local needsClose = spec.whcLastCloseTarget == nil or math.abs(spec.whcLastCloseTarget - targetTime) > 0.005
+    if not needsClose then
+        if spec.advancedOpenClose == true then
+            needsClose = not WHC.isAnimationAtStopTime(self, "topGrabAnimation", targetTime)
+                or not WHC.isAnimationAtStopTime(self, "bottomGrabAnimation", targetTime)
+                or not WHC.isAnimationAtStopTime(self, "rollersGrabAnimation", targetTime)
+        else
+            needsClose = not WHC.isAnimationAtStopTime(self, "grabAnimation", targetTime)
+        end
+    end
+
+    if needsClose then
+        spec.whcLastCloseTarget = targetTime
+        WHC.closeHead(self)
+    end
 end
 
 function WHC:stopClosingHead()
@@ -2882,7 +2989,8 @@ function WHC.registerSavegameSchema()
     schemaSavegame:register(XMLValueType.BOOL, key .. "#tiltDownOnFellingCut", "Tilt down on felling cut")
     schemaSavegame:register(XMLValueType.BOOL, key .. "#tiltUpWithOpenButton", "Tilt up with open button")
     schemaSavegame:register(XMLValueType.FLOAT, key .. "#tiltUpDelay", "Tilt up with open button delay")
-    schemaSavegame:register(XMLValueType.BOOL, key .. "#thisIsaVariable", "Tilt down with close button")
+    schemaSavegame:register(XMLValueType.BOOL, key .. "#tiltDownWithCloseButton", "Tilt down with close button")
+    schemaSavegame:register(XMLValueType.BOOL, key .. "#thisIsaVariable", "Tilt down with close button (legacy name)")
     schemaSavegame:register(XMLValueType.FLOAT, key .. "#tiltDownDelay", "Tilt down with close button delay")
     schemaSavegame:register(XMLValueType.ANGLE, key .. "#tiltMaxRot", "Max tilt angle")
 

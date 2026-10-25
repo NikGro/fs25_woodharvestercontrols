@@ -57,7 +57,7 @@ function WoodHarvesterControlsUpdateSettingsEvent:writeStream(streamId, connecti
     streamWriteBool(streamId, self.settings.tiltDownOnFellingCut)
     streamWriteBool(streamId, self.settings.tiltUpWithOpenButton)
     streamWriteFloat32(streamId, self.settings.tiltUpDelay)
-    streamWriteBool(streamId, self.settings.thisIsaVariable)
+    streamWriteBool(streamId, self.settings.tiltDownWithCloseButton)
     streamWriteFloat32(streamId, self.settings.tiltDownDelay)
     streamWriteFloat32(streamId, self.settings.tiltMaxRot)
 
@@ -111,7 +111,7 @@ function WoodHarvesterControlsUpdateSettingsEvent:readStream(streamId, connectio
     self.settings.tiltDownOnFellingCut = streamReadBool(streamId)
     self.settings.tiltUpWithOpenButton = streamReadBool(streamId)
     self.settings.tiltUpDelay = streamReadFloat32(streamId)
-    self.settings.thisIsaVariable = streamReadBool(streamId)
+    self.settings.tiltDownWithCloseButton = streamReadBool(streamId)
     self.settings.tiltDownDelay = streamReadFloat32(streamId)
     self.settings.tiltMaxRot = streamReadFloat32(streamId)
 
